@@ -11,13 +11,6 @@ import (
 	"github.com/rubenv/opencagedata"
 )
 
-type weatherData struct {
-	Name string `json:"name"`
-	Main struct {
-		Kelvin float64 `json:"temp"`
-	} `json:"main"`
-}
-
 type weatherProvider interface {
 	temperature(city string) (float64, error) // in Kelvin, naturally
 }
@@ -47,15 +40,15 @@ func hello(w http.ResponseWriter, r *http.Request) {
 
 func handleWeather(w http.ResponseWriter, r *http.Request) {
 	mw := multiWeatherProvider{
+		climaCellMap{apiKey: "ln72tf5m8L8KixwmfhmKE6A3S9Gs28g1"},
 		openWeatherMap{apiKey: "4dd289639d38eff5372a5e5e082e66a2"},
 		weatherBitMap{apiKey: "15149aaf102f4822bd6175807899c0ea"},
-		climaCellMap{apiKey: "ln72tf5m8L8KixwmfhmKE6A3S9Gs28g1"},
 	}
 
 	begin := time.Now()
 	city := strings.SplitN(r.URL.Path, "/", 3)[2]
 
-	temp, err := mw.temperature(city)
+	temp, numResults, err := mw.temperature(city)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -63,45 +56,60 @@ func handleWeather(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"city": city,
-		"temp": temp,
-		"took": time.Since(begin).String(),
+		"city":    city,
+		"temp":    temp,
+		"took":    time.Since(begin).String(),
+		"results": numResults,
 	})
 }
 
-func (w multiWeatherProvider) temperature(city string) (float64, error) {
+type tempProvider struct {
+	Kelvin   float64
+	Provider weatherProvider
+}
+
+func (w multiWeatherProvider) temperature(city string) (float64, int, error) {
 	// Make a channel for temperatures, and a channel for errors.
 	// Each provider will push a value into only one.
-	temps := make(chan float64, len(w))
+	temps := make(chan tempProvider, len(w))
 	errs := make(chan error, len(w))
 
 	// For each provider, spawn a goroutine with an anonymous function.
 	// That function will invoke the temperature method, and forward the response.
 	for _, provider := range w {
 		go func(p weatherProvider) {
+			x := time.Now()
 			k, err := p.temperature(city)
+			log.Printf("%T took %v", p, time.Since(x).String())
 			if err != nil {
 				errs <- err
 				return
 			}
-			temps <- k
+			temps <- tempProvider{k, p}
 		}(provider)
 	}
 
 	sum := 0.0
+	resultsCount := 0
 
 	// Collect a temperature or an error from each provider.
+outerloop:
 	for i := 0; i < len(w); i++ {
 		select {
+		case <-time.After(10000 * time.Millisecond):
+			log.Printf("timed-out after 0.2 Seconds")
+			break outerloop
 		case temp := <-temps:
-			sum += temp
+			log.Printf("Received temperature from %T", temp.Provider)
+			sum += temp.Kelvin
+			resultsCount++
 		case err := <-errs:
-			return 0, err
+			return 0, 0, err
 		}
 	}
 
 	// Return the average, same as before.
-	return sum / float64(len(w)), nil
+	return sum / float64(resultsCount), resultsCount, nil
 }
 
 func (w openWeatherMap) temperature(city string) (float64, error) {
@@ -164,13 +172,6 @@ func (w climaCellMap) temperature(city string) (float64, error) {
 	}
 
 	defer resp.Body.Close()
-
-	// bodyBytes, err2 := ioutil.ReadAll(resp.Body)
-	// if err2 != nil {
-	// 	log.Fatal(err2)
-	// }
-	// bodyString := string(bodyBytes)
-	// log.Println(bodyString)
 
 	var d struct {
 		Temp struct {
