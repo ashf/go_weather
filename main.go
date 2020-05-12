@@ -165,13 +165,6 @@ func (w climaCellMap) temperature(city string) (float64, error) {
 
 	defer resp.Body.Close()
 
-	// bodyBytes, err2 := ioutil.ReadAll(resp.Body)
-	// if err2 != nil {
-	// 	log.Fatal(err2)
-	// }
-	// bodyString := string(bodyBytes)
-	// log.Println(bodyString)
-
 	var d struct {
 		Temp struct {
 			Celcius float64 `json:"value"`
